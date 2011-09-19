@@ -1,4 +1,4 @@
-# EMECHS Scheme (C) Copyright Joseph Osako Jr 2010
+# EMECHS Scheme (C) Copyright Joseph Osako Jr 2011
 #
 # This software is freely distributable under the terms of the GNU 
 # General Public License version 3. See the file LICENSE for details.
@@ -133,10 +133,19 @@ n_eval:       .asciiz "eval"
 n_apply:      .asciiz "apply"
 n_define:     .asciiz "define"
 n_set:        .asciiz "set!"
+n_set_car:    .asciiz "set-car!"
+n_set_cdr:    .asciiz "set-cdr!"
+n_cons:       .asciiz "cons"
+n_car:        .asciiz "car"
+n_cdr:        .asciiz "cdr"
 n_lambda:     .asciiz "lambda"
+n_let:        .asciiz "let"
+n_let_star:   .asciiz "let*"
+n_letrec:     .asciiz "letrec"
 n_begin:      .asciiz "begin"
 n_if:         .asciiz "if"
 n_cond:       .asciiz "cond"
+n_case:       .asciiz "case"
 n_quote:      .asciiz "quote"
 s_quote:      .asciiz "'"
 n_quasiquote: .asciiz "quasiquote"
@@ -163,12 +172,16 @@ print_jumps:   .word TYPE.EMPTY_LIST, print_null, TYPE.PAIR, print_list
                .word TYPE.ERROR, print_error
 
 form_jumps:    .word n_eval, eval, n_apply, apply, n_define, eval_define
-               .word n_set, eval_set, n_lambda, eval_lambda, n_begin, eval_begin
-               .word n_if, eval_if, n_cond, eval_cond
+               .word n_set, eval_set, n_set_car, eval_set_car, n_set_cdr, eval_set_cdr
+			   .word n_cons, eval_cons, n_car, eval_car, n_cdr, eval_cdr
+			   .word n_lambda, eval_lambda, n_let, eval_let, n_let_star, eval_let_star
+			   .word n_letrec, eval_letrec, n_begin, eval_begin
+               .word n_if, eval_if, n_cond, eval_cond, n_case, eval_case
 			   .word n_quote, eval_quote, s_quote, eval_quote
                .word n_quasiquote, eval_quasiquote, s_quasiquote, eval_quasiquote
 			   .word s_at, eval_at
-			   .word n_plus, eval_plus, s_plus, eval_plus, n_minus, eval_minus, s_minus, eval_minus
+			   .word n_plus, eval_plus, s_plus, eval_plus
+			   .word n_minus, eval_minus, s_minus, eval_minus
 			   .word   0			   
 			   
 
@@ -326,7 +339,7 @@ parse_object:
 
     # test for a possible negative number
 parse_object.neg_test:
-    li $t1, '-'            # does the object begin with a negative sign
+    li $t1, '-'                       # does the object begin with a negative sign
     bne $t2, $t1, parse_object.string_test
     nop
     addi $a0, $t0, 1
@@ -338,7 +351,7 @@ parse_object.neg_test:
 
     # test for the start of a string
 parse_object.string_test:
-    li $t1, 0x22            # determine if current char is a double-quote
+    li $t1, 0x22                      # determine if current char is a double-quote
     bne $t2, $t1, parse_object.hash_test
     nop
     jal parse_string
@@ -346,7 +359,7 @@ parse_object.string_test:
     b parse_object.exit
     nop
 
-parse_object.hash_test:      # determine if current char is a '#'
+parse_object.hash_test:               # determine if current char is a '#'
     li $t1, 0x23
     bne $t2, $t1, parse_object.lparen_test
     nop
@@ -687,8 +700,6 @@ parse_list.get_car:
 	b parse_list.exit
 	move $s0, $v0         # set the pointer to the pair
 	
-	
-	
 parse_list.no_nesting_cdar:
     jal parse_object      # parse the object to be pointed to by CAR
     move $a0, $s3
@@ -813,7 +824,7 @@ parse_list.exit:
 
 ###############################
 # (char*, object*) parse_symbol(char*)
-# parse a symbol object
+# parse a symbol object, and determine if it is a built-in
 ###############################
 parse_symbol:
     addi $sp, $sp -24
@@ -851,9 +862,9 @@ parse_symbol.builtin:
 	move $a0, $s2
 	
     sw $v0, object.function($s1)
-    move $v1, $s1
+    
     b parse_symbol.exit
-	move $v0, $s0
+	move $v1, $s1
 	
 parse_symbol.not_builtin:
     move $a0, $s0
@@ -870,9 +881,11 @@ parse_symbol.not_builtin:
     sw $s0, object.symname($s1)
     sw $zero, object.symval($s1)
     move $v1, $v0
-    move $v0, $s0
+
 	
 parse_symbol.exit:
+    add $v0, $s0, $s3                 # advance the buffer pointer past the current symbol
+	
     lw $s3, fp.s3($fp) 
     lw $s2, fp.s2($fp) 
     lw $s1, fp.s1($fp) 
