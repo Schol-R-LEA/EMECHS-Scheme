@@ -155,6 +155,7 @@ n_plus:       .asciiz "plus"
 s_plus:       .asciiz "+"
 n_minus:      .asciiz "minus"
 s_minus:      .asciiz "-"
+
 s_end:        .byte   0
 .align 4
 
@@ -323,7 +324,7 @@ parse_object:
     lbu $t2, 0($t0)
 
     # test for numbers first
-    move $t1, $zero	
+    move $t1, $zero    # make sure that the upper half of $t1 is cleared
     li $t1, '0'        # if less than ASCII zero, not a positive number
     blt $t2, $t1, parse_object.neg_test
     nop
@@ -342,10 +343,24 @@ parse_object.neg_test:
     li $t1, '-'                       # does the object begin with a negative sign
     bne $t2, $t1, parse_object.string_test
     nop
-    addi $a0, $t0, 1
-    move $a1, $t1
-    jal parse_number
+	# look ahead one and see if it is a number
+	lbu $t3, 1($t0)
+    li $t1, '0'        # if less than ASCII zero, not a negative number
+    blt $t3, $t1, parse_object.symbol_test
     nop
+    li $t1, '9'        # if greater than ASCII nine, not a negative number
+    bgt $t3, $t1, parse_object.symbol_test	
+	
+    addi $a0, $t0, 1
+    jal parse_number
+    move $a1, $t1
+	
+	#negate the resulting value in the object
+	lw $t2, object.integer($v1)
+	nop
+	neg $t2, $t2
+	sw $t2, object.integer($v1)
+		
     j parse_object.exit
     nop
 
@@ -724,7 +739,7 @@ parse_list.set_car:
     nop
 	
     jal eat_whitespace
-    addi $a0, $s3, -1     # step back one and test for the end of the list	
+    addi $a0, $s3, -1     # eat the whitespace and test for the end of the list again	
 	
     move $s3, $v0
     lbu $t0, 0($s3)
@@ -748,7 +763,7 @@ parse_list.get_cdr:
     bne $t0, $t1, parse_list.no_nesting_cadr
     nop
     jal eat_whitespace
-    move $a0, $s3
+    addi $a0, $s3, -1
     move $s3, $v0
     li $t1, ')'
     lbu $t4, 0($s3)
@@ -779,7 +794,7 @@ parse_list.nesting_cadr:
 
     # move on to parse the CDDR
 	jal eat_whitespace
-	addi $a0, $s3, 1
+	addi $a0, $s3, 0
     jal parse_list
     move $a0, $v0
 	
@@ -791,7 +806,7 @@ parse_list.nesting_cadr:
 
 parse_list.no_nesting_cadr:
     jal parse_list           # recurse to get the CDR
-    move $a0, $s3
+    addi $a0, $s3, -1
        
     move $s3, $v0
     sw $v1, object.cdr($s0)    
@@ -828,12 +843,12 @@ parse_list.exit:
 ###############################
 parse_symbol:
     addi $sp, $sp -24
-    sw $fp, 4($sp)
-    addi $fp, $sp, 4 
+    sw $fp, 0($sp)
+    addi $fp, $sp, 0 
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # current character pointer
     sw $s1, fp.s1($fp)                # pointer to the new object
-	sw $s2, fp.s2($fp)                # pointer to the builtin, if any
+	sw $s2, fp.s2($fp)                # pointer to the builtin, or the new string
 	sw $s3, fp.s3($fp)                # length of the current string
 
     jal symbol_length
@@ -871,27 +886,28 @@ parse_symbol.not_builtin:
     jal make_string
     move $a1, $s3
 
-    move $s0, $v0                     # save the pointer to the new string
+    move $s2, $v0                     # save the pointer to the new string
 	
     jal make_object                   # make a string object and set it
 	nop
     move $s1, $v0                     # to point to the string we created
     li $t0, TYPE.SYMBOL
     sw $t0, object.type($s1)
-    sw $s0, object.symname($s1)
+    sw $s2, object.symname($s1)
     sw $zero, object.symval($s1)
     move $v1, $v0
 
 	
 parse_symbol.exit:
     add $v0, $s0, $s3                 # advance the buffer pointer past the current symbol
+	add $v0, $v0, 1
 	
     lw $s3, fp.s3($fp) 
     lw $s2, fp.s2($fp) 
     lw $s1, fp.s1($fp) 
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
-    lw $fp, 4($sp)
+    lw $fp, 0($sp)
     jr $ra
     addi $sp, $sp, 24	
 	
@@ -1252,14 +1268,15 @@ make_object.allocate:
 # char* make_string(char*, int) 
 ###############################
 make_string:
-    addi $sp, $sp -20
-    sw $fp, 12($sp)
-    addi $fp, $sp, 12
+    addi $sp, $sp, -24
+    sw $fp, 0($sp)
+    addi $fp, $sp, 0
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # global heap pointer
     sw $s1, fp.s1($fp)                # size of padding to add to the string
     sw $s2, fp.s2($fp)                # pointer to the global heap pointer
-
+    sw $s3, fp.s3($fp)                # pointer to the endpoint of the new string
+	
     li $t0, 4
     la $s2, heap_pointer
     lw $s0, 0($s2)                    # get the current heap pointer
@@ -1268,12 +1285,12 @@ make_string:
     add $t2, $s0, $a1                 # get the heap pointer plus the size of the string
                                       # to determine the endpoint of the new string
     
-    addi $t2, $t2, 1                  # add one extra character for the zero-delimiter,
+    addi $s3, $t2, 1                  # add one extra character for the zero-delimiter,
                                       # needed by print_string
-    divu $t2, $t0
+    divu $s3, $t0
     mfhi $t5
     sub $s1, $t0, $t5                 # get the size of the offset used to word-align the data
-    add $t4, $t2, $s1
+    add $t4, $s3, $s1
     bgt $t3, $t4, make_string.allocate
     nop
     jal collect_garbage
@@ -1294,15 +1311,17 @@ make_string.allocate:
     move $a2, $s1
 
 make_string.exit:
-    move $v0, $s0
+    sb $zero, -1($s3)                  # force delimit the string in case of a paren
+    move $v0, $s0                      # calculate the current pointer position
 
+    lw $s3, fp.s3($fp)	
     lw $s2, fp.s2($fp)
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
-    lw $fp, 12($sp)
+    lw $fp, 0($sp)
     jr $ra
-    addi $sp, $sp, 20
+    addi $sp, $sp, 24
     
 
 
@@ -1478,7 +1497,8 @@ symbol_length:
 	li	$v0, 0        # initialize counter
     li  $t1, 0x20      # $t0 == space
     move $t0, $zero
-    li    $t2, ')'
+    li $t2, ')'
+	li $t3, '('
 	
 symbol_length.inc:	
 	lbu	$t0, 0($a0)
@@ -1486,10 +1506,17 @@ symbol_length.inc:
 	addiu	$a0, $a0, 1
 symbol_length.test:
     beq $t0, $t2, symbol_length.exit  # exit if you've reached an rparen
+    nop
+    beq $t0, $t3, symbol_length.exit  # exit if you've reached an lparen
     nop	
 	bgt	$t0, $t1, symbol_length.inc
 	nop
-
+    b symbol_length.exit
+	nop
+	
+symbol_length.found_paren:
+    addi $v0, $v0, -1	
+	
 symbol_length.exit:
 	jr	$ra  
     addi $v0, $v0, -1
@@ -1558,8 +1585,6 @@ test_builtin.exit:
     jr $ra
     addi $sp, $sp, 24
 
-
-	
 ###############################
 # function* match_builtin(char*)
 # Evaluate the input as a Scheme statement
@@ -1575,8 +1600,10 @@ match_builtin.loop:
     bne $a0, $t1, match_builtin.loop
 	addi $t0, $t0, 8
 	
-	jr $ra
 	lw $v0, 4($t2)
+    nop	
+	jr $ra
+	nop
 	
 match_builtin.no_match:
     j fatal_error	
