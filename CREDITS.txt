@@ -1,0 +1,5 @@
+CREDITS for EMECHS Scheme
+--------------------------
+The initial primary developer of EMECHS was Joseph Osako, Jr  <JoeJr@osakoweb.com>, aka Schol-R-LEA;2, who wrote the original code for parsing the various types of objects and for handling linked lists.
+
+Much of the credit for this project goes to Peter Michaux, whose series of articles entitled "Scheme from Scratch" (http://michaux.ca/articles/scheme-from-scratch-introduction) served as an inspiration and a guide. Additional credit is given to Abdulaziz Guhloum, whose paper "An Incrememntal Approach to Compiler COnstruction" was a key guide for both this project and Michaux's.
