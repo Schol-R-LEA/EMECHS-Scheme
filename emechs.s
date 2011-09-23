@@ -82,6 +82,8 @@ object.strlen      = 12
 object.symname     = 8    # name of the symbol
 object.symval      = 12   # ptr to the symbol's value
 object.boolval     = 8
+object.vecval      = 8
+object.veclen      = 12
 object.lambda      = 8    # ptr to the function's list representation
 object.args        = 12   # ptr to an argument list
 object.formname    = 8    # pointer to the name of a built-in form
@@ -90,7 +92,8 @@ object.special     = 8
 object.errcode     = 8
 
 print_jumps.entry_size = 8
-
+form_jumps.entry_size = 8
+eval_jumps.entry_size = 8
 
 # error types
 err.unhandled_error       = 0x00
@@ -155,6 +158,9 @@ n_plus:       .asciiz "plus"
 s_plus:       .asciiz "+"
 n_minus:      .asciiz "minus"
 s_minus:      .asciiz "-"
+n_add1:       .asciiz "add1"
+n_sub1:       .asciiz "sub1"
+
 
 s_end:        .byte   0
 .align 4
@@ -167,7 +173,7 @@ print_jumps:   .word TYPE.EMPTY_LIST, print_null, TYPE.PAIR, print_list
                .word TYPE.FLONUM, print_flonum, TYPE.RATIONAL, print_rational
                .word TYPE.COMPLEX, print_complex, TYPE.CHAR, print_character
                .word TYPE.STRING, print_string_object, TYPE.SYMBOL, print_symbol
-               .word TYPE.BOOLEAN, print_boolean
+               .word TYPE.BOOLEAN, print_boolean, TYPE.VECTOR, print_vector
                .word TYPE.LAMBDA, print_function, TYPE.BUILTIN, print_built_in
                .word TYPE.SPECIAL, print_special, TYPE.COMMENT, print_comment
                .word TYPE.ERROR, print_error
@@ -183,16 +189,18 @@ form_jumps:    .word n_eval, eval, n_apply, apply, n_define, eval_define
                .word s_at, eval_at
                .word n_plus, eval_plus, s_plus, eval_plus
                .word n_minus, eval_minus, s_minus, eval_minus
+			   .word n_add1, eval_add1, n_sub1, eval_sub1
                .word   0
 
 
-eval_jumps:    .word TYPE.EMPTY_LIST, eval_null, TYPE.PAIR, eval_list
+eval_jumps:    .word TYPE.EMPTY_LIST, self_eval, TYPE.PAIR, eval_list
                .word TYPE.INT, self_eval, TYPE.FIXNUM, self_eval
                .word TYPE.FLONUM, self_eval, TYPE.RATIONAL, self_eval
                .word TYPE.COMPLEX, self_eval, TYPE.CHAR, self_eval
                .word TYPE.STRING, self_eval, TYPE.SYMBOL, eval_symbol
-               .word TYPE.BOOLEAN, self_eval
-               .word TYPE.LAMBDA, eval_function, TYPE.SPECIAL, call_built_in
+               .word TYPE.BOOLEAN, self_eval, TYPE.VECTOR, eval_vector
+               .word TYPE.LAMBDA, eval_function, TYPE.SPECIAL, eval_special
+			   .word TYPE.BUILTIN, self_eval
                .word TYPE.COMMENT, skip_comment, TYPE.ERROR, eval_error
 
 
@@ -843,8 +851,8 @@ parse_list.exit:
 ###############################
 parse_symbol:
     addi $sp, $sp -24
-    sw $fp, 0($sp)
-    addi $fp, $sp, 0
+    sw $fp, 16($sp)
+    addi $fp, $sp, 16
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # current character pointer
     sw $s1, fp.s1($fp)                # pointer to the new object
@@ -907,7 +915,7 @@ parse_symbol.exit:
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
-    lw $fp, 0($sp)
+    lw $fp, 16($sp)
     jr $ra
     addi $sp, $sp, 24
 
@@ -1269,8 +1277,8 @@ make_object.allocate:
 ###############################
 make_string:
     addi $sp, $sp, -24
-    sw $fp, 0($sp)
-    addi $fp, $sp, 0
+    sw $fp, 16($sp)
+    addi $fp, $sp, 16
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # global heap pointer
     sw $s1, fp.s1($fp)                # size of padding to add to the string
@@ -1319,7 +1327,7 @@ make_string.exit:
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
-    lw $fp, 0($sp)
+    lw $fp, 16($sp)
     jr $ra
     addi $sp, $sp, 24
 
@@ -1529,8 +1537,8 @@ symbol_length.exit:
 ###############################
 test_builtin:
     addi $sp, $sp -24
-    sw $fp, 8($sp)
-    addi $fp, $sp, 8
+    sw $fp, 16($sp)
+    addi $fp, $sp, 16
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # pointer to the string being compared
     sw $s1, fp.s1($fp)                # length of the compared string
@@ -1581,7 +1589,7 @@ test_builtin.exit:
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
     nop
-    lw $fp, 8($sp)
+    lw $fp, 16($sp)
     jr $ra
     addi $sp, $sp, 24
 
@@ -1623,7 +1631,22 @@ eval:
     move $s0, $a0
     move $s1, $a1
 
-    move $v0, $a0
+    # go through the eval dispatch table for the different evaluation strategies
+	lw $t0, object.type($s0)
+    la $t1, eval_jumps
+    li $t3, TYPE.ERROR                # final object type in list
+eval.loop:
+    lw $t2, 0($t1)          # load the next listing in jump table
+    nop
+    beq $t2, $t3, fatal_error         # if reached the end of the list, print error
+    nop
+    bne $t2, $t0, eval.loop           # not a match, try the next entry
+    addi $t1, $t1, eval_jumps.entry_size
+	
+    lw $t4, -4($t1)
+    move $a0, $s0
+    jalr $t4
+    move $a1, $s1
 
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
@@ -1641,7 +1664,217 @@ self_eval:
     jr $ra
     nop
 
+###############################
+# object* eval_list(object*, environment*)
+###############################
+eval_list:
+    addi $sp, $sp -28
+    sw $fp, 20($sp)
+    addi $fp, $sp, 20
+    sw $ra, fp.ra($fp)
+    sw $s0, fp.s0($fp)                # pointer to the list being evaluated
+    sw $s1, fp.s1($fp)                # pointer to the current environment  
+    sw $s2, fp.s2($fp)                # pointer to the first evaluated result
+    sw $s3, fp.s3($fp)                # pointer to the list of remaining evaluated results
+    sw $s4, fp.s4($fp)  	          # pointer to the next evaluated result
+	
+	move $s0, $a0
+	move $s1, $a1
+	
+	lw $a0, object.car($s0)
+	# move $a1, $s1                   # redundant, but marking it is a good idea
+	jal eval
+	nop
+	move $s2, $v0
+	
+	move $t1, $s0
+	
+eval_list.eval_cdr:
+    lw $s3, object.cdr($t1)
+	li $t0, TYPE.EMPTY_LIST
+	beq $s3, $t0, eval_list.complete_args
+	nop
+	lw $s4, 0($s3)
+	move $a0, $s3
+	jal make_pair
+	move $a1, $s4
+	li $t0, TYPE.PAIR
+	beq $s3, $t0, eval_list.eval_cdr
+	move $t1, $s3
+	
+eval_list.complete_args:	
+	move $a0, $s2
+	move $a1, $s3
+	jal apply
+	move $a2, $s1
+	
+	# return the return value of apply, no actual changes needed
+	
+eval_list.exit:	
+    lw $s4, fp.s4($fp)	
+    lw $s3, fp.s3($fp)	
+    lw $s2, fp.s2($fp)	
+    lw $s1, fp.s1($fp)
+    lw $s0, fp.s0($fp)
+    lw $ra, fp.ra($fp)
+    nop
+    lw $fp, 20($sp)
+    jr $ra
+    addi $sp, $sp, 28
 
+	
+eval_define:
+eval_set:
+eval_set_car:
+eval_set_cdr:
+eval_cons:
+eval_car:
+eval_cdr:
+eval_lambda:
+eval_let:
+eval_let_star:
+eval_letrec:
+eval_begin:
+eval_if:
+eval_cond:
+eval_case:
+eval_quote:
+eval_quasiquote:
+eval_at:
+eval_minus:
+eval_sub1:
+eval_symbol:
+eval_vector:
+skip_comment:
+    j fatal_error
+    nop	
+	
+	
+###############################
+# object* eval_plus(list*, environment*)
+###############################
+eval_plus:
+    addi $sp, $sp -16
+    sw $fp, 8($sp)
+    addi $fp, $sp, 8
+    sw $ra, fp.ra($fp)
+    sw $s0, fp.s0($fp)                # pointer to the list being evaluated
+    sw $s1, fp.s1($fp)                # pointer to the current environment  
+
+	move $s0, $a0
+    move $s1, $zero
+	
+eval_plus.loop:	
+	lw $t1, object.car($a0)
+	nop
+	lw $t2, object.cdr($a0)
+    nop
+	lw $t3, object.car($t2)
+	nop
+    	
+	add $s1, $t1, $t3
+    jal make_object
+	nop
+	
+	li $t4, TYPE.FIXNUM
+	sw $t4, object.type($v0)
+	sw $s1, object.integer($v0)
+	
+eval_plus.exit:	
+    lw $s1, fp.s1($fp)
+    lw $s0, fp.s0($fp)
+    lw $ra, fp.ra($fp)
+    nop
+    lw $fp, 8($sp)
+    jr $ra
+    addi $sp, $sp, 16
+
+
+###############################
+# object* eval_add1(list*, environment*)
+###############################	
+eval_add1:
+    addi $sp, $sp -20
+    sw $fp, 12($sp)
+    addi $fp, $sp, 12
+    sw $ra, fp.ra($fp)
+    sw $s0, fp.s0($fp)                # pointer to the value to be added one to
+    sw $s1, fp.s1($fp)                # final result after adding one  
+    sw $s2, fp.s2($fp) 
+	
+	move $s0, $a0
+    move $s1, $zero
+		
+	lw $t1, object.car($a0)
+	nop
+    lw $t2, object.integer($t1)
+    nop
+	
+	addi $s1, $t2, 1
+    jal make_object
+	nop
+	
+	li $t4, TYPE.INT
+	sw $t4, object.type($v0)
+	sw $s1, object.integer($v0)
+    move $s2, $v0
+	
+    jal make_object
+	nop
+	
+	li $t4, TYPE.PAIR
+	sw $t4, object.type($v0)
+	sw $s2, object.car($v0)
+    la $t5, null
+	sw $t5, object.cdr($v0)	
+
+	
+eval_add1.exit:
+    lw $s2, fp.s2($fp)
+    lw $s1, fp.s1($fp)
+    lw $s0, fp.s0($fp)
+    lw $ra, fp.ra($fp)
+    nop
+    lw $fp, 12($sp)
+    jr $ra
+    addi $sp, $sp, 20    
+	
+
+###############################
+# object* apply(object*, list*, environment*)
+###############################	
+apply:
+    addi $sp, $sp -8
+    sw $fp, 0($sp)
+    addi $fp, $sp, 0
+    sw $ra, fp.ra($fp)
+
+    lw $t0, object.type($a0)
+    li $t1, TYPE.BUILTIN
+    bne $t0, $t1, apply.test_function
+	nop
+    # go through the eval dispatch table for the different evaluation strategies
+	lw $t0, object.function($a0)
+	
+    move $a0, $a1
+    jalr $t0
+    move $a1, $a2
+	b apply.exit
+	nop
+	
+apply.test_function:
+    li $t1, TYPE.LAMBDA
+    b fatal_error
+
+apply.exit:	 
+    lw $ra, fp.ra($fp)
+    nop
+    lw $fp, 0($sp)
+    jr $ra
+    addi $sp, $sp, 8
+
+	
+	
 ###############################
 fatal_error:
     li $v0, print_string
