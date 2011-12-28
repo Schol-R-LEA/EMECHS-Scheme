@@ -113,6 +113,8 @@ input_buffer:  .space  0x1000
 TOP_ENV:       .space  0x1000
 heap_pointer:  .space  4
 swap_pointer:  .space  4
+escape_frame:  .space  4             # holds initial stack pointer to allow the program 
+                                     # to escape to the top-level in case of errors
 .align 4
 
 
@@ -189,7 +191,7 @@ form_jumps:    .word n_eval, eval, n_apply, apply, n_define, eval_define
                .word s_at, eval_at
                .word n_plus, eval_plus, s_plus, eval_plus
                .word n_minus, eval_minus, s_minus, eval_minus
-			   .word n_add1, eval_add1, n_sub1, eval_sub1
+               .word n_add1, eval_add1, n_sub1, eval_sub1
                .word   0
 
 
@@ -200,7 +202,7 @@ eval_jumps:    .word TYPE.EMPTY_LIST, self_eval, TYPE.PAIR, eval_list
                .word TYPE.STRING, self_eval, TYPE.SYMBOL, eval_symbol
                .word TYPE.BOOLEAN, self_eval, TYPE.VECTOR, eval_vector
                .word TYPE.LAMBDA, eval_function, TYPE.SPECIAL, eval_special
-			   .word TYPE.BUILTIN, self_eval
+               .word TYPE.BUILTIN, self_eval
                .word TYPE.COMMENT, skip_comment, TYPE.ERROR, eval_error
 
 
@@ -259,9 +261,11 @@ main:
     la $t0, swap
     la $t1, swap_pointer
     sw $t0, 0($t1)
-
-
-
+    
+    # save the original stack position so the stack can be munged on an exception
+    la $t0, escape_frame              
+    sw $sp, 0($t0)
+    
 main.repl:
     li $v0, print_string
     la $a0, prompt
@@ -1632,22 +1636,22 @@ eval:
     move $s1, $a1
 
     # go through the eval dispatch table for the different evaluation strategies
-	lw $t0, object.type($s0)
+    lw $t0, object.type($s0)
     la $t1, eval_jumps
     li $t3, TYPE.ERROR                # final object type in list
 eval.loop:
-    lw $t2, 0($t1)          # load the next listing in jump table
+    lw $t2, 0($t1)                    # load the next listing in jump table
     nop
     beq $t2, $t3, fatal_error         # if reached the end of the list, print error
     nop
     bne $t2, $t0, eval.loop           # not a match, try the next entry
     addi $t1, $t1, eval_jumps.entry_size
-	
+
     lw $t4, -4($t1)
     move $a0, $s0
     jalr $t4
     move $a1, $s1
-
+    
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
@@ -1668,52 +1672,67 @@ self_eval:
 # object* eval_list(object*, environment*)
 ###############################
 eval_list:
-    addi $sp, $sp -28
+    addi $sp, $sp, -28
     sw $fp, 20($sp)
     addi $fp, $sp, 20
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # pointer to the list being evaluated
-    sw $s1, fp.s1($fp)                # pointer to the current environment  
+    sw $s1, fp.s1($fp)                # pointer to the current environment
     sw $s2, fp.s2($fp)                # pointer to the first evaluated result
-    sw $s3, fp.s3($fp)                # pointer to the list of remaining evaluated results
-    sw $s4, fp.s4($fp)  	          # pointer to the next evaluated result
+    sw $s3, fp.s3($fp)                # pointer to the list of evaluated arguments
+    sw $s4, fp.s4($fp)                # pointer to the next unevaluated argument
+
+    move $s0, $a0
+    move $s1, $a1
 	
-	move $s0, $a0
-	move $s1, $a1
-	
-	lw $a0, object.car($s0)
-	# move $a1, $s1                   # redundant, but marking it is a good idea
-	jal eval
+    lw $a0, object.car($s0)
+    move $a1, $s1                     # redundant, but otherwise I'd have a nop here
+    jal eval
+    nop
+    move $s2, $v0
+
+    la $a1, null
+    la $a0, null                      # prepare a list entry point for evaluated values
+    jal make_pair
+    nop
+
+    move $s3, $v0	
+    lw $s4, object.cdr($s0)           # get the list of arguments
 	nop
-	move $s2, $v0
-	
-	move $t1, $s0
+	sw $s4, object.car($s3)
+	j eval_list.cdr_test
+	nop
 	
 eval_list.eval_cdr:
-    lw $s3, object.cdr($t1)
-	li $t0, TYPE.EMPTY_LIST
-	beq $s3, $t0, eval_list.complete_args
+    lw $a0, object.car($s4)
 	nop
-	lw $s4, 0($s3)
-	move $a0, $s3
-	jal make_pair
-	move $a1, $s4
-	li $t0, TYPE.PAIR
-	beq $s3, $t0, eval_list.eval_cdr
-	move $t1, $s3
+    jal eval                          # evaluate the next element of the arg list
+    move $a1, $s1
 	
-eval_list.complete_args:	
-	move $a0, $s2
-	move $a1, $s3
-	jal apply
-	move $a2, $s1
+    move $a1, $v0                    
+    jal destructive_append            # add the evaluated result to the list of arguments
+    move $a0, $s3  
 	
-	# return the return value of apply, no actual changes needed
+	move $t1, $s4
+    lw $s4, object.cdr($t1)           # get the next evaluable element
+	nop
+eval_list.cdr_test:
+    lw $t2, object.type($s4)          # if you haven't reached the end of the list, 
+	li $t0, TYPE.EMPTY_LIST
+    bne $t2, $t0, eval_list.eval_cdr  # go on to the next argument
 	
-eval_list.exit:	
-    lw $s4, fp.s4($fp)	
-    lw $s3, fp.s3($fp)	
-    lw $s2, fp.s2($fp)	
+eval_list.complete_args:
+    move $a0, $s2
+    move $a1, $s3
+    jal apply
+    move $a2, $s1
+
+    # return the return value of apply, no actual changes needed
+
+eval_list.exit:
+    lw $s4, fp.s4($fp)
+    lw $s3, fp.s3($fp)
+    lw $s2, fp.s2($fp)
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
@@ -1722,7 +1741,7 @@ eval_list.exit:
     jr $ra
     addi $sp, $sp, 28
 
-	
+
 eval_define:
 eval_set:
 eval_set_car:
@@ -1747,9 +1766,9 @@ eval_symbol:
 eval_vector:
 skip_comment:
     j fatal_error
-    nop	
-	
-	
+    nop
+
+
 ###############################
 # object* eval_plus(list*, environment*)
 ###############################
@@ -1759,28 +1778,28 @@ eval_plus:
     addi $fp, $sp, 8
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # pointer to the list being evaluated
-    sw $s1, fp.s1($fp)                # pointer to the current environment  
+    sw $s1, fp.s1($fp)                # pointer to the current environment
 
-	move $s0, $a0
+    move $s0, $a0
     move $s1, $zero
-	
-eval_plus.loop:	
-	lw $t1, object.car($a0)
-	nop
-	lw $t2, object.cdr($a0)
+
+eval_plus.loop:
+    lw $t1, object.car($a0)
     nop
-	lw $t3, object.car($t2)
-	nop
-    	
-	add $s1, $t1, $t3
+    lw $t2, object.cdr($a0)
+    nop
+    lw $t3, object.car($t2)
+    nop
+
+    add $s1, $t1, $t3
     jal make_object
-	nop
-	
-	li $t4, TYPE.FIXNUM
-	sw $t4, object.type($v0)
-	sw $s1, object.integer($v0)
-	
-eval_plus.exit:	
+    nop
+
+    li $t4, TYPE.FIXNUM
+    sw $t4, object.type($v0)
+    sw $s1, object.integer($v0)
+
+eval_plus.exit:
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
@@ -1792,57 +1811,52 @@ eval_plus.exit:
 
 ###############################
 # object* eval_add1(list*, environment*)
-###############################	
+###############################
 eval_add1:
-    addi $sp, $sp -20
-    sw $fp, 12($sp)
-    addi $fp, $sp, 12
+    addi $sp, $sp -16
+    sw $fp, 8($sp)
+    addi $fp, $sp, 8
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # pointer to the value to be added one to
-    sw $s1, fp.s1($fp)                # final result after adding one  
-    sw $s2, fp.s2($fp) 
-	
-	move $s0, $a0
-    move $s1, $zero
-		
-	lw $t1, object.car($a0)
-	nop
-    lw $t2, object.integer($t1)
-    nop
-	
-	addi $s1, $t2, 1
-    jal make_object
-	nop
-	
-	li $t4, TYPE.INT
-	sw $t4, object.type($v0)
-	sw $s1, object.integer($v0)
-    move $s2, $v0
-	
-    jal make_object
-	nop
-	
-	li $t4, TYPE.PAIR
-	sw $t4, object.type($v0)
-	sw $s2, object.car($v0)
-    la $t5, null
-	sw $t5, object.cdr($v0)	
+    sw $s1, fp.s1($fp)                # final result after adding one
 
-	
+    move $s0, $a0
+    move $s1, $zero
+
+    lw $t1, object.car($a0)           # strip the argument out of the surrounding list
+    nop
+    
+    lw $t2, object.type($t1)
+    li $t3, TYPE.INT
+    bne $t2, $t3, eval_add1.error
+    nop
+    lw $t2, object.integer($t1)       # get the actual value
+    nop
+
+    addi $s1, $t2, 1                  # perform the actual addition operation   
+    jal make_object                   # make an object to hold the result
+    nop
+
+    li $t3, TYPE.INT                  
+    sw $t3, object.type($v0)
+    sw $s1, object.integer($v0)
+    j eval_add1.exit                  # bypass the error case
+    
+eval_add1.error:
+    la $v0, false
+    
 eval_add1.exit:
-    lw $s2, fp.s2($fp)
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
-    nop
-    lw $fp, 12($sp)
+    lw $fp, 8($sp)
     jr $ra
-    addi $sp, $sp, 20    
-	
+    addi $sp, $sp, 16
+
 
 ###############################
 # object* apply(object*, list*, environment*)
-###############################	
+###############################
 apply:
     addi $sp, $sp -8
     sw $fp, 0($sp)
@@ -1852,29 +1866,65 @@ apply:
     lw $t0, object.type($a0)
     li $t1, TYPE.BUILTIN
     bne $t0, $t1, apply.test_function
-	nop
+    nop
     # go through the eval dispatch table for the different evaluation strategies
-	lw $t0, object.function($a0)
-	
+    lw $t0, object.function($a0) 
+    
     move $a0, $a1
     jalr $t0
     move $a1, $a2
-	b apply.exit
-	nop
-	
+    b apply.exit
+    nop
+
 apply.test_function:
     li $t1, TYPE.LAMBDA
     b fatal_error
 
-apply.exit:	 
+apply.exit:
     lw $ra, fp.ra($fp)
-    nop
     lw $fp, 0($sp)
     jr $ra
     addi $sp, $sp, 8
 
+
+
+###############################
+# list* destructive_append(list*, object*)
+###############################
+destructive_append:
+    addi $sp, $sp -8
+    sw $fp, 0($sp)
+    addi $fp, $sp, 0
+    sw $ra, fp.ra($fp)
 	
+	move $t0, $a0
+	j destructive_append.seek_test
+    move $t3, $a0
 	
+destructive_append.seek_next:
+    li $t2, TYPE.PAIR
+    bne $t2, $t1, fatal_error          # not a proper list, raise an error
+
+    move $t3, $t0
+    lw $t0, object.cdr($t3)
+    nop
+destructive_append.seek_test:
+	lw $t1, object.type($t0)
+    li $t2, TYPE.EMPTY_LIST            # if you haven't reached the end of the list, continue
+    bne $t2, $t1, destructive_append.seek_next	
+	nop
+    
+destructive_append.complete_list:
+    sw $a1, object.cdr($t3)            # replace the existing reference to the null list
+    move $v0, $a0                      # with the new inserted object
+	
+destructive_append.exit:
+    lw $ra, fp.ra($fp)
+    lw $fp, 0($sp)
+    jr $ra
+    addi $sp, $sp, 8    
+
+    
 ###############################
 fatal_error:
     li $v0, print_string
