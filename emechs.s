@@ -62,6 +62,7 @@ TYPE.ERROR      = 0xffffffff
 
 # offsets defining the position of different possible values
 # within an object
+object             = 0
 object.sizeof      = 16
 object.type        = 0
 object.marked      = 4
@@ -1669,7 +1670,7 @@ self_eval:
     nop
 
 ###############################
-# object* eval_list(object*, environment*)
+# object* eval_list(list*, environment*)
 ###############################
 eval_list:
     addi $sp, $sp, -28
@@ -1696,14 +1697,25 @@ eval_list:
     jal make_pair
     nop
 
-    move $s3, $v0	
     lw $s4, object.cdr($s0)           # get the list of arguments
+	move $s3, $v0                     
+	
+	
+	lw $a0, object.car($s4)           # put the first argument in the car of the new list
 	nop
-	sw $s4, object.car($s3)
-	j eval_list.cdr_test
+	jal eval
+	nop
+	sw $v0, object.car($s3)
+	
+	j eval_list.args_test
 	nop
 	
-eval_list.eval_cdr:
+eval_list.eval_args:
+	lw $t0, object.type($s4)          # validate that the list of arguments
+	li $t1, TYPE.PAIR                 # actually is a proper list
+	bne $t0, $t1, fatal_error
+	nop
+
     lw $a0, object.car($s4)
 	nop
     jal eval                          # evaluate the next element of the arg list
@@ -1713,13 +1725,13 @@ eval_list.eval_cdr:
     jal destructive_append            # add the evaluated result to the list of arguments
     move $a0, $s3  
 	
+eval_list.args_test:
 	move $t1, $s4
     lw $s4, object.cdr($t1)           # get the next evaluable element
 	nop
-eval_list.cdr_test:
     lw $t2, object.type($s4)          # if you haven't reached the end of the list, 
 	li $t0, TYPE.EMPTY_LIST
-    bne $t2, $t0, eval_list.eval_cdr  # go on to the next argument
+    bne $t2, $t0, eval_list.eval_args # go on to the next argument
 	
 eval_list.complete_args:
     move $a0, $s2
@@ -1822,7 +1834,7 @@ eval_add1:
 
     move $s0, $a0
     move $s1, $zero
-
+		
     lw $t1, object.car($a0)           # strip the argument out of the surrounding list
     nop
     
@@ -1898,8 +1910,13 @@ destructive_append:
     sw $ra, fp.ra($fp)
 	
 	move $t0, $a0
+	lw $t1, object.type($t0) 
+    li $t2, TYPE.PAIR
+    bne $t2, $t1, fatal_error          # not a proper list, raise an error	
+	nop
+	lw $t3, object.cdr($t0)
 	j destructive_append.seek_test
-    move $t3, $a0
+    nop
 	
 destructive_append.seek_next:
     li $t2, TYPE.PAIR
