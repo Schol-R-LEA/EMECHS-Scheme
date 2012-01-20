@@ -55,9 +55,10 @@ TYPE.SYMBOL     = 0x09
 TYPE.BOOLEAN    = 0x0a
 TYPE.VECTOR     = 0x0b
 TYPE.LAMBDA     = 0x0c
-TYPE.BUILTIN    = 0x0d
+TYPE.PRIMITIVE  = 0x0d
 TYPE.SPECIAL    = 0x0e    # special characters such as periods and quotes
-TYPE.COMMENT    = 0x0f
+TYPE.FORM       = 0x0f
+TYPE.COMMENT    = 0x10
 TYPE.ERROR      = 0xffffffff
 
 # offsets defining the position of different possible values
@@ -86,9 +87,11 @@ object.boolval     = 8
 object.vecval      = 8
 object.veclen      = 12
 object.lambda      = 8    # ptr to the function's list representation
-object.args        = 12   # ptr to an argument list
-object.formname    = 8    # pointer to the name of a built-in form
-object.function    = 12   # pointer to a built-in function
+object.env         = 12   # ptr to the function's environment
+object.formname    = 8    # pointer to the name of a form
+object.form        = 12   # pointer to a built-in form
+object.funname     = 8    # pointer to the name of a form
+object.function    = 12   # pointer to a built-in form
 object.special     = 8
 object.errcode     = 8
 
@@ -153,19 +156,19 @@ n_if:         .asciiz "if"
 n_cond:       .asciiz "cond"
 n_case:       .asciiz "case"
 n_quote:      .asciiz "quote"
-s_quote:      .asciiz "'"
 n_quasiquote: .asciiz "quasiquote"
-s_quasiquote: .asciiz "`"
-s_at:         .asciiz "@"
-n_plus:       .asciiz "plus"
-s_plus:       .asciiz "+"
-n_minus:      .asciiz "minus"
-s_minus:      .asciiz "-"
-n_add1:       .asciiz "add1"
-n_sub1:       .asciiz "sub1"
 
+special_end:  .byte   0
 
-s_end:        .byte   0
+primitive_forms:
+pn_plus:       .asciiz "plus"
+ps_plus:       .asciiz "+"
+pn_minus:      .asciiz "minus"
+ps_minus:      .asciiz "-"
+pn_add1:       .asciiz "add1"
+pn_sub1:       .asciiz "sub1"
+
+primitive_end: .byte   0
 .align 4
 
 ###############################
@@ -177,7 +180,7 @@ print_jumps:   .word TYPE.EMPTY_LIST, print_null, TYPE.PAIR, print_list
                .word TYPE.COMPLEX, print_complex, TYPE.CHAR, print_character
                .word TYPE.STRING, print_string_object, TYPE.SYMBOL, print_symbol
                .word TYPE.BOOLEAN, print_boolean, TYPE.VECTOR, print_vector
-               .word TYPE.LAMBDA, print_function, TYPE.BUILTIN, print_built_in
+               .word TYPE.LAMBDA, print_function, TYPE.PRIMITIVE, print_built_in
                .word TYPE.SPECIAL, print_special, TYPE.COMMENT, print_comment
                .word TYPE.ERROR, print_error
 
@@ -187,13 +190,14 @@ form_jumps:    .word n_eval, eval, n_apply, apply, n_define, eval_define
                .word n_lambda, eval_lambda, n_let, eval_let, n_let_star, eval_let_star
                .word n_letrec, eval_letrec, n_begin, eval_begin
                .word n_if, eval_if, n_cond, eval_cond, n_case, eval_case
-               .word n_quote, eval_quote, s_quote, eval_quote
-               .word n_quasiquote, eval_quasiquote, s_quasiquote, eval_quasiquote
-               .word s_at, eval_at
-               .word n_plus, eval_plus, s_plus, eval_plus
-               .word n_minus, eval_minus, s_minus, eval_minus
-               .word n_add1, eval_add1, n_sub1, eval_sub1
-               .word   0
+               .word n_quote, eval_quote, n_quasiquote, eval_quasiquote
+               .word 0
+
+prim_jumps:
+               .word pn_plus, prim_plus, ps_plus, prim_plus
+               .word pn_minus, prim_minus, ps_minus, prim_minus
+               .word pn_add1, prim_add1, pn_sub1, prim_sub1
+               .word 0
 
 
 eval_jumps:    .word TYPE.EMPTY_LIST, self_eval, TYPE.PAIR, eval_list
@@ -203,7 +207,7 @@ eval_jumps:    .word TYPE.EMPTY_LIST, self_eval, TYPE.PAIR, eval_list
                .word TYPE.STRING, self_eval, TYPE.SYMBOL, eval_symbol
                .word TYPE.BOOLEAN, self_eval, TYPE.VECTOR, eval_vector
                .word TYPE.LAMBDA, eval_function, TYPE.SPECIAL, eval_special
-               .word TYPE.BUILTIN, self_eval
+               .word TYPE.PRIMITIVE, self_eval, TYPE.FORM, self_eval
                .word TYPE.COMMENT, skip_comment, TYPE.ERROR, eval_error
 
 
@@ -855,45 +859,59 @@ parse_list.exit:
 # parse a symbol object, and determine if it is a built-in
 ###############################
 parse_symbol:
-    addi $sp, $sp -24
-    sw $fp, 16($sp)
-    addi $fp, $sp, 16
+    addi $sp, $sp -36
+    sw $fp, 28($sp)
+    addi $fp, $sp, 28
     sw $ra, fp.ra($fp)
     sw $s0, fp.s0($fp)                # current character pointer
     sw $s1, fp.s1($fp)                # pointer to the new object
     sw $s2, fp.s2($fp)                # pointer to the builtin, or the new string
     sw $s3, fp.s3($fp)                # length of the current string
-
+    sw $s4, fp.s4($fp)                # type of built-in currenly tested
+	sw $s5, fp.s5($fp)                # counter for loops on built-ins
+	sw $s6, fp.s6($fp)                # set of forms and/or primitives to match against
+	
     jal symbol_length
     move $s0, $a0
-
     move $s3, $v0
 
+	la $a2, special_forms             # prepare the test for special forms
+	li $s4, TYPE.FORM
+	move $s5, $zero
+	la $s6, form_jumps
+parse_symbol.builtin_test:
     move $a0, $s0
-    jal test_builtin                  # test to see if a given symbol is actually a built-in
-    move $a1, $v0
-
+    jal test_builtin                  # test to see if a given symbol is actually a built-in form 
+    move $a1, $s3
+	
     move $s2, $v1
-
-    beqz $v0, parse_symbol.not_builtin
+    beqz $v0, parse_symbol.not_form
     nop
 
 parse_symbol.builtin:
     jal make_object                   # make a builtin object and set it to point to the form
     nop
     move $s1, $v0
-    li $t1, TYPE.BUILTIN
-    sw $t1, object.type($s1)
+    sw $s4, object.type($s1)
     sw $s2, object.formname($s1)
-
+	move $a0, $s2
     jal match_builtin
-    move $a0, $s2
+    move $a1, $s6
 
     sw $v0, object.function($s1)
 
     b parse_symbol.exit
     move $v1, $s1
 
+parse_symbol.not_form:
+    bnez $s5, parse_symbol.not_builtin   # if we've gone around twice, it's not a built-in
+	nop
+    la $a2, primitive_forms              # prepare the test for primitive forms
+	li $s4, TYPE.PRIMITIVE
+	la $s6, prim_jumps
+    b parse_symbol.builtin_test
+	addi $s5, $s5, 1
+	
 parse_symbol.not_builtin:
     move $a0, $s0
     jal make_string
@@ -915,14 +933,16 @@ parse_symbol.exit:
     add $v0, $s0, $s3                 # advance the buffer pointer past the current symbol
     add $v0, $v0, 1
 
+	lw $s5, fp.s5($fp)
+	lw $s4, fp.s4($fp)
     lw $s3, fp.s3($fp)
     lw $s2, fp.s2($fp)
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
-    lw $fp, 16($sp)
+    lw $fp, 28($sp)
     jr $ra
-    addi $sp, $sp, 24
+    addi $sp, $sp, 36
 
 
 
@@ -1222,6 +1242,13 @@ print_comment:
     j print_error
 
 
+###############################
+print_vector:
+    j print_error
+
+	
+	
+	
 ###############################
 print_error:
     la $a0, errtype
@@ -1536,9 +1563,9 @@ symbol_length.exit:
 
 
 ###############################
-# (bool, char*) test_builtin(char*, int)
+# (bool, char*) test_builtin(char*, int, char[][])
 # test a symbol to see if it matches
-# one of the special forms
+# one of the special forms or primitives
 ###############################
 test_builtin:
     addi $sp, $sp -24
@@ -1550,32 +1577,32 @@ test_builtin:
     sw $s2, fp.s2($fp)                # pointer to the form string to test against
     sw $s3, fp.s3($fp)                # length of the compared form string
 
-    move $s0, $a0
-    move $s1, $a1
-    la $s2, special_forms
+    move $s0, $a0                     # symbol to test
+    move $s1, $a1                     # length of the symbol to test
+    move $s2, $a2                     # start at the beginning of the list of symbols to search
 
 test_builtin.test_loop:
-    jal symbol_length                 # get the length of the current special form to test
+    jal symbol_length                 # get the length of the current special form to test against
     move $a0, $s2
 
     move $s3, $v0
 
-    bne $s3, $s1, test_builtin.iterate
+    bne $s3, $s1, test_builtin.iterate    #  if the strings are of different sizes, skip to the next one
     nop
-    move $a0, $s0
+    move $a0, $s0                     # else run a more comprehensive comparison
     move $a1, $s2
     jal substring_match
     move $a2, $s3
 
-    bnez $v0, test_builtin.true
+    bnez $v0, test_builtin.true       # found a match, return true
     nop
 
 test_builtin.iterate:
-    add $s2, $s2, $s3
-    addi $s2, $s2, 1
-    lbu $t0, 0($s2)
+    add $s2, $s2, $s3                 # advance past the end of the current symbol
+    addi $s2, $s2, 1                  # including the string delimiter
+    lbu $t0, 0($s2)                   # get the next byte and see if it is the zero marker
     nop
-    bnez $t0, test_builtin.test_loop
+    bnez $t0, test_builtin.test_loop  # if we haven't reached the end of the list, repeat
     nop
 
 test_builtin.false:
@@ -1599,12 +1626,12 @@ test_builtin.exit:
     addi $sp, $sp, 24
 
 ###############################
-# function* match_builtin(char*)
+# function* match_builtin(char*, char[][])
 # Evaluate the input as a Scheme statement
 ###############################
 match_builtin:
-    la $t0, form_jumps                # get the starting point of the forms jump table
-
+    move $t0, $a1                     # get the starting point of the forms jump table
+	
 match_builtin.loop:
     lw $t1, 0($t0)
     nop
@@ -1705,7 +1732,12 @@ eval_list:
 	nop
 	jal eval
 	nop
-	sw $v0, object.car($s3)
+	move $t0, $v0
+	sw $t0, object.car($s3)
+	
+	li $t1, TYPE.FORM                # test for the special forms
+	
+	
 	
 	j eval_list.args_test
 	nop
@@ -1772,11 +1804,11 @@ eval_case:
 eval_quote:
 eval_quasiquote:
 eval_at:
-eval_minus:
-eval_sub1:
 eval_symbol:
 eval_vector:
 skip_comment:
+prim_minus:
+prim_sub1:
     j fatal_error
     nop
 
@@ -1784,7 +1816,7 @@ skip_comment:
 ###############################
 # object* eval_plus(list*, environment*)
 ###############################
-eval_plus:
+prim_plus:
     addi $sp, $sp -16
     sw $fp, 8($sp)
     addi $fp, $sp, 8
@@ -1795,7 +1827,7 @@ eval_plus:
     move $s0, $a0
     move $s1, $zero
 
-eval_plus.loop:
+prim_plus.loop:
     lw $t1, object.car($a0)
     nop
     lw $t2, object.cdr($a0)
@@ -1811,7 +1843,7 @@ eval_plus.loop:
     sw $t4, object.type($v0)
     sw $s1, object.integer($v0)
 
-eval_plus.exit:
+prim_plus.exit:
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
@@ -1824,7 +1856,7 @@ eval_plus.exit:
 ###############################
 # object* eval_add1(list*, environment*)
 ###############################
-eval_add1:
+prim_add1:
     addi $sp, $sp -16
     sw $fp, 8($sp)
     addi $fp, $sp, 8
@@ -1840,7 +1872,7 @@ eval_add1:
     
     lw $t2, object.type($t1)
     li $t3, TYPE.INT
-    bne $t2, $t3, eval_add1.error
+    bne $t2, $t3, prim_add1.error
     nop
     lw $t2, object.integer($t1)       # get the actual value
     nop
@@ -1852,12 +1884,12 @@ eval_add1:
     li $t3, TYPE.INT                  
     sw $t3, object.type($v0)
     sw $s1, object.integer($v0)
-    j eval_add1.exit                  # bypass the error case
+    j prim_add1.exit                  # bypass the error case
     
-eval_add1.error:
+prim_add1.error:
     la $v0, false
     
-eval_add1.exit:
+prim_add1.exit:
     lw $s1, fp.s1($fp)
     lw $s0, fp.s0($fp)
     lw $ra, fp.ra($fp)
@@ -1876,7 +1908,7 @@ apply:
     sw $ra, fp.ra($fp)
 
     lw $t0, object.type($a0)
-    li $t1, TYPE.BUILTIN
+    li $t1, TYPE.PRIMITIVE
     bne $t0, $t1, apply.test_function
     nop
     # go through the eval dispatch table for the different evaluation strategies
