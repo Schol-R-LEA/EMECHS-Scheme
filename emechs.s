@@ -64,36 +64,35 @@ TYPE.ERROR      = 0xffffffff
 # offsets defining the position of different possible values
 # within an object
 object             = 0
-object.sizeof      = 16
+object.sizeof      = 12
 object.type        = 0
-object.marked      = 4
-object.car         = 8
-object.cdr         = 12
-object.integer     = 8    # 32-bit integer
-object.intstring   = 12   # pointer to a string object representing the integer
-object.float       = 8    # 64-bit floating-point number
-object.fixednum    = 8    # ptr to an integer representing the integral part
-object.fixeddec    = 12   # ptr to an integer representing the fractional part
-object.numerator   = 8    # ptr to an integer
-object.denominator = 12   # ptr to an integer
-object.real        = 8    # ptr to a float - real part of a complex number
-object.imaginary   = 12   # ptr to a float - imaginary part of a complex number
-object.char        = 8
-object.strptr      = 8
-object.strlen      = 12
-object.symname     = 8    # name of the symbol
-object.symval      = 12   # ptr to the symbol's value
-object.boolval     = 8
-object.vecval      = 8
-object.veclen      = 12
-object.lambda      = 8    # ptr to the function's list representation
-object.env         = 12   # ptr to the function's environment
-object.formname    = 8    # pointer to the name of a form
-object.form        = 12   # pointer to a built-in form
-object.funname     = 8    # pointer to the name of a form
-object.function    = 12   # pointer to a built-in form
-object.special     = 8
-object.errcode     = 8
+object.car         = 4
+object.cdr         = 8
+object.integer     = 4    # 32-bit integer
+object.intstring   = 8    # pointer to a string object representing the integer
+object.float       = 4    # 64-bit floating-point number
+object.fixednum    = 4    # ptr to an integer representing the integral part
+object.fixeddec    = 8    # ptr to an integer representing the fractional part
+object.numerator   = 4    # ptr to an integer
+object.denominator = 8    # ptr to an integer
+object.real        = 4    # ptr to a float - real part of a complex number
+object.imaginary   = 8    # ptr to a float - imaginary part of a complex number
+object.char        = 4
+object.strptr      = 4
+object.strlen      = 8 
+object.symname     = 4    # name of the symbol
+object.symval      = 8    # ptr to the symbol's value
+object.boolval     = 4
+object.vecval      = 4
+object.veclen      = 8
+object.lambda      = 4    # ptr to the function's list representation
+object.env         = 8    # ptr to the function's environment
+object.formname    = 4    # pointer to the name of a form
+object.form        = 8    # pointer to a built-in form
+object.funname     = 4    # pointer to the name of a form
+object.function    = 8    # pointer to a built-in form
+object.special     = 4
+object.errcode     = 4
 
 print_jumps.entry_size = 8
 form_jumps.entry_size = 8
@@ -125,13 +124,13 @@ escape_frame:  .space  4             # holds initial stack pointer to allow the 
 ###############################
 # Object Singletons
 ###############################
-null:          .word TYPE.EMPTY_LIST, 0x01, 0x00, 0x00
-true:          .word TYPE.BOOLEAN, 0x01, 0x01, 0x00
-false:         .word TYPE.BOOLEAN, 0x01, 0x00, 0x00
-period:        .word TYPE.SPECIAL, 0x01, 0x2e, 0x00
-quote:         .word TYPE.SPECIAL, 0x01, 0x27, 0x00
-quasiquote:    .word TYPE.SPECIAL, 0x01, 0x2c, 0x00
-at:            .word TYPE.SPECIAL, 0x01, 0x40, 0x00
+null:          .word TYPE.EMPTY_LIST, 0x00, 0x00
+true:          .word TYPE.BOOLEAN, 0x01, 0x00
+false:         .word TYPE.BOOLEAN, 0x00, 0x00
+period:        .word TYPE.SPECIAL, 0x2e, 0x00
+quote:         .word TYPE.SPECIAL, 0x27, 0x00
+quasiquote:    .word TYPE.SPECIAL, 0x2c, 0x00
+at:            .word TYPE.SPECIAL, 0x40, 0x00
 
 
 ###############################
@@ -868,22 +867,22 @@ parse_symbol:
     sw $s2, fp.s2($fp)                # pointer to the builtin, or the new string
     sw $s3, fp.s3($fp)                # length of the current string
     sw $s4, fp.s4($fp)                # type of built-in currenly tested
-	sw $s5, fp.s5($fp)                # counter for loops on built-ins
-	sw $s6, fp.s6($fp)                # set of forms and/or primitives to match against
-	
+    sw $s5, fp.s5($fp)                # counter for loops on built-ins
+    sw $s6, fp.s6($fp)                # set of forms and/or primitives to match against
+    
     jal symbol_length
     move $s0, $a0
     move $s3, $v0
 
-	la $a2, special_forms             # prepare the test for special forms
-	li $s4, TYPE.FORM
-	move $s5, $zero
-	la $s6, form_jumps
+    la $a2, special_forms             # prepare the test for special forms
+    li $s4, TYPE.FORM
+    move $s5, $zero
+    la $s6, form_jumps
 parse_symbol.builtin_test:
     move $a0, $s0
     jal test_builtin                  # test to see if a given symbol is actually a built-in form 
     move $a1, $s3
-	
+    
     move $s2, $v1
     beqz $v0, parse_symbol.not_form
     nop
@@ -894,7 +893,7 @@ parse_symbol.builtin:
     move $s1, $v0
     sw $s4, object.type($s1)
     sw $s2, object.formname($s1)
-	move $a0, $s2
+    move $a0, $s2
     jal match_builtin
     move $a1, $s6
 
@@ -905,13 +904,13 @@ parse_symbol.builtin:
 
 parse_symbol.not_form:
     bnez $s5, parse_symbol.not_builtin   # if we've gone around twice, it's not a built-in
-	nop
+    nop
     la $a2, primitive_forms              # prepare the test for primitive forms
-	li $s4, TYPE.PRIMITIVE
-	la $s6, prim_jumps
+    li $s4, TYPE.PRIMITIVE
+    la $s6, prim_jumps
     b parse_symbol.builtin_test
-	addi $s5, $s5, 1
-	
+    addi $s5, $s5, 1
+    
 parse_symbol.not_builtin:
     move $a0, $s0
     jal make_string
@@ -933,8 +932,8 @@ parse_symbol.exit:
     add $v0, $s0, $s3                 # advance the buffer pointer past the current symbol
     add $v0, $v0, 1
 
-	lw $s5, fp.s5($fp)
-	lw $s4, fp.s4($fp)
+    lw $s5, fp.s5($fp)
+    lw $s4, fp.s4($fp)
     lw $s3, fp.s3($fp)
     lw $s2, fp.s2($fp)
     lw $s1, fp.s1($fp)
@@ -979,7 +978,7 @@ print_object.loop:
 
 
 ###############################
-#
+# void print_null()
 ###############################
 print_null:
     la $a0, null_str
@@ -1246,9 +1245,9 @@ print_comment:
 print_vector:
     j print_error
 
-	
-	
-	
+    
+    
+    
 ###############################
 print_error:
     la $a0, errtype
@@ -1515,8 +1514,8 @@ strlen.test:
 ###############################
 string_length:
     move $v0, $zero                   # initialize counter
-    li      $t1, 0x22                 # $t0 == double-quote
-    move    $t0, $zero
+    li   $t1, 0x22                    # $t0 == double-quote
+    move $t0, $zero
 
 string_length.inc:
     lbu    $t0, 0($a0)
@@ -1631,7 +1630,7 @@ test_builtin.exit:
 ###############################
 match_builtin:
     move $t0, $a1                     # get the starting point of the forms jump table
-	
+    
 match_builtin.loop:
     lw $t1, 0($t0)
     nop
@@ -1712,7 +1711,7 @@ eval_list:
 
     move $s0, $a0
     move $s1, $a1
-	
+    
     lw $a0, object.car($s0)
     move $a1, $s1                     # redundant, but otherwise I'd have a nop here
     jal eval
@@ -1725,46 +1724,46 @@ eval_list:
     nop
 
     lw $s4, object.cdr($s0)           # get the list of arguments
-	move $s3, $v0                     
-	
-	
-	lw $a0, object.car($s4)           # put the first argument in the car of the new list
-	nop
-	jal eval
-	nop
-	move $t0, $v0
-	sw $t0, object.car($s3)
-	
-	li $t1, TYPE.FORM                # test for the special forms
-	
-	
-	
-	j eval_list.args_test
-	nop
-	
+    move $s3, $v0                     
+    
+    
+    lw $a0, object.car($s4)           # put the first argument in the car of the new list
+    nop
+    jal eval
+    nop
+    move $t0, $v0
+    sw $t0, object.car($s3)
+    
+    li $t1, TYPE.FORM                # test for the special forms
+    
+    
+    
+    j eval_list.args_test
+    nop
+    
 eval_list.eval_args:
-	lw $t0, object.type($s4)          # validate that the list of arguments
-	li $t1, TYPE.PAIR                 # actually is a proper list
-	bne $t0, $t1, fatal_error
-	nop
+    lw $t0, object.type($s4)          # validate that the list of arguments
+    li $t1, TYPE.PAIR                 # actually is a proper list
+    bne $t0, $t1, fatal_error
+    nop
 
     lw $a0, object.car($s4)
-	nop
+    nop
     jal eval                          # evaluate the next element of the arg list
     move $a1, $s1
-	
+    
     move $a1, $v0                    
     jal destructive_append            # add the evaluated result to the list of arguments
     move $a0, $s3  
-	
+    
 eval_list.args_test:
-	move $t1, $s4
+    move $t1, $s4
     lw $s4, object.cdr($t1)           # get the next evaluable element
-	nop
+    nop
     lw $t2, object.type($s4)          # if you haven't reached the end of the list, 
-	li $t0, TYPE.EMPTY_LIST
+    li $t0, TYPE.EMPTY_LIST
     bne $t2, $t0, eval_list.eval_args # go on to the next argument
-	
+    
 eval_list.complete_args:
     move $a0, $s2
     move $a1, $s3
@@ -1866,7 +1865,7 @@ prim_add1:
 
     move $s0, $a0
     move $s1, $zero
-		
+        
     lw $t1, object.car($a0)           # strip the argument out of the surrounding list
     nop
     
@@ -1940,16 +1939,16 @@ destructive_append:
     sw $fp, 0($sp)
     addi $fp, $sp, 0
     sw $ra, fp.ra($fp)
-	
-	move $t0, $a0
-	lw $t1, object.type($t0) 
+    
+    move $t0, $a0
+    lw $t1, object.type($t0) 
     li $t2, TYPE.PAIR
-    bne $t2, $t1, fatal_error          # not a proper list, raise an error	
-	nop
-	lw $t3, object.cdr($t0)
-	j destructive_append.seek_test
+    bne $t2, $t1, fatal_error          # not a proper list, raise an error    
     nop
-	
+    lw $t3, object.cdr($t0)
+    j destructive_append.seek_test
+    nop
+    
 destructive_append.seek_next:
     li $t2, TYPE.PAIR
     bne $t2, $t1, fatal_error          # not a proper list, raise an error
@@ -1958,15 +1957,15 @@ destructive_append.seek_next:
     lw $t0, object.cdr($t3)
     nop
 destructive_append.seek_test:
-	lw $t1, object.type($t0)
+    lw $t1, object.type($t0)
     li $t2, TYPE.EMPTY_LIST            # if you haven't reached the end of the list, continue
-    bne $t2, $t1, destructive_append.seek_next	
-	nop
+    bne $t2, $t1, destructive_append.seek_next    
+    nop
     
 destructive_append.complete_list:
     sw $a1, object.cdr($t3)            # replace the existing reference to the null list
     move $v0, $a0                      # with the new inserted object
-	
+    
 destructive_append.exit:
     lw $ra, fp.ra($fp)
     lw $fp, 0($sp)
